@@ -308,6 +308,15 @@ def _experiencia_str(e: dict) -> str:
     return f"{base}: {desc}" if desc else base
 
 
+# Caracteres de control ilegales que Excel/xlsx no acepta (los quitamos antes de escribir)
+_CARACTERES_ILEGALES = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _limpiar_celda(v):
+    """Quita caracteres de control invisibles que rompen Excel. Deja números/None igual."""
+    return _CARACTERES_ILEGALES.sub("", v) if isinstance(v, str) else v
+
+
 def filas_datos(crudos: list) -> list:
     """Filas (dicts) con TODOS los datos de cada candidato. Base comun para Excel y CSV."""
     filas = []
@@ -318,7 +327,7 @@ def filas_datos(crudos: list) -> list:
         empresa_actual = next((e.get("empresa") for e in exps if e.get("sigue_ahi") and e.get("empresa")), "")
         if not empresa_actual and exps:
             empresa_actual = exps[0].get("empresa") or ""
-        filas.append({
+        fila = {
             "Nombre": p["nombre"],
             "Titular": p["titular"],
             "Ubicación": p["ubicacion"],
@@ -334,7 +343,8 @@ def filas_datos(crudos: list) -> list:
                 for e in p["educacion"] if e.get("institucion")
             ),
             "Experiencia": "\n".join(_experiencia_str(e) for e in exps if e.get("cargo")),
-        })
+        }
+        filas.append({k: _limpiar_celda(v) for k, v in fila.items()})
     return filas
 
 
