@@ -125,8 +125,15 @@ if st.button("📥 Extraer datos de candidatos", type="primary", use_container_w
         )
     else:
         try:
-            with st.spinner(f"Extrayendo {len(urls)} perfil(es) de LinkedIn (puede tardar 1-2 min)..."):
-                st.session_state.perfiles = evaluar.scrape_perfiles(urls, st.secrets["APIFY_TOKEN"])
+            barra = st.progress(0.0, text=f"Extrayendo {len(urls)} perfiles de LinkedIn...")
+
+            def _progreso(hechos, total):
+                barra.progress(hechos / total, text=f"Extrayendo... {hechos}/{total} perfiles")
+
+            st.session_state.perfiles = evaluar.scrape_perfiles(
+                urls, st.secrets["APIFY_TOKEN"], on_progress=_progreso
+            )
+            barra.progress(1.0, text="¡Listo!")
             st.success(f"Listo: {len(st.session_state.perfiles)} perfil(es) extraído(s) de {len(urls)} URL(s).")
         except Exception as e:
             st.error(f"Hubo un problema al extraer los datos: {e}")
@@ -156,10 +163,21 @@ if perfiles:
     buffer = io.BytesIO()
     evaluar.construir_workbook_datos(perfiles).save(buffer)
     buffer.seek(0)
-    st.download_button(
-        "⬇️ Descargar Excel de candidatos",
-        data=buffer,
-        file_name="candidatos_prometeo.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
+    st.caption("Para TODOS los datos (experiencia, skills, educación…), usa los botones de abajo. La tabla de arriba es solo un vistazo.")
+    col_xlsx, col_csv = st.columns(2)
+    with col_xlsx:
+        st.download_button(
+            "⬇️ Descargar Excel",
+            data=buffer,
+            file_name="candidatos_prometeo.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    with col_csv:
+        st.download_button(
+            "⬇️ Descargar CSV completo",
+            data=evaluar.construir_csv_datos(perfiles),
+            file_name="candidatos_prometeo.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )

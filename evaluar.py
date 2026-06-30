@@ -119,19 +119,29 @@ def datos_contacto(p: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Raspado de perfiles por URL (Apify) — cuerpo de peticion FIJO
 # ---------------------------------------------------------------------------
-def scrape_perfiles(urls: list, apify_token: str) -> list:
-    """Enriquece una lista de URLs de LinkedIn con dev_fusion. Body fijo: {profileUrls: [...]}."""
-    body = json.dumps({"profileUrls": list(urls)}).encode("utf-8")
-    req = urllib.request.Request(
-        f"{APIFY_ENDPOINT}?token={apify_token}", data=body, method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        items = json.loads(resp.read().decode("utf-8"))
-    buenos = [it for it in items if "error" not in it]
-    if not buenos and items:
-        raise RuntimeError(items[0].get("error", "Apify devolvio un error desconocido."))
-    return buenos
+def scrape_perfiles(urls: list, apify_token: str, chunk: int = 50, on_progress=None) -> list:
+    """Enriquece URLs de LinkedIn con dev_fusion, EN LOTES para evitar timeouts en listas grandes.
+
+    Body fijo por lote: {profileUrls: [...]}. on_progress(hechos, total) actualiza el avance.
+    """
+    urls = list(urls)
+    resultados, errores = [], []
+    for i in range(0, len(urls), chunk):
+        lote = urls[i:i + chunk]
+        body = json.dumps({"profileUrls": lote}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{APIFY_ENDPOINT}?token={apify_token}", data=body, method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            items = json.loads(resp.read().decode("utf-8"))
+        resultados.extend(it for it in items if "error" not in it)
+        errores.extend(it["error"] for it in items if "error" in it)
+        if on_progress:
+            on_progress(min(i + chunk, len(urls)), len(urls))
+    if not resultados and errores:
+        raise RuntimeError(errores[0])
+    return resultados
 
 
 # ---------------------------------------------------------------------------
