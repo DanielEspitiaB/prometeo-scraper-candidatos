@@ -26,6 +26,7 @@ import sys
 import tomllib
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dataclasses import asdict
 
@@ -119,26 +120,42 @@ def datos_contacto(p: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Raspado de perfiles por URL (Apify) — cuerpo de peticion FIJO
 # ---------------------------------------------------------------------------
-def scrape_perfiles(urls: list, apify_token: str, chunk: int = 50, on_progress=None) -> list:
-    """Enriquece URLs de LinkedIn con dev_fusion, EN LOTES para evitar timeouts en listas grandes.
+def _raspar_lote(lote: list, apify_token: str) -> list:
+    """Una llamada a Apify con un lote de URLs. Body fijo: {profileUrls: [...]}."""
+    body = json.dumps({"profileUrls": lote}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{APIFY_ENDPOINT}?token={apify_token}", data=body, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
-    Body fijo por lote: {profileUrls: [...]}. on_progress(hechos, total) actualiza el avance.
+
+def scrape_perfiles(urls: list, apify_token: str, chunk: int = 100,
+                    max_workers: int = 8, on_progress=None) -> list:
+    """Enriquece URLs de LinkedIn con dev_fusion, en lotes EN PARALELO (rapido y sin timeouts).
+
+    Divide en lotes de 'chunk' y los lanza simultaneamente (hasta 'max_workers' a la vez).
+    on_progress(hechos, total) actualiza el avance a medida que cada lote termina.
     """
     urls = list(urls)
-    resultados, errores = [], []
-    for i in range(0, len(urls), chunk):
-        lote = urls[i:i + chunk]
-        body = json.dumps({"profileUrls": lote}).encode("utf-8")
-        req = urllib.request.Request(
-            f"{APIFY_ENDPOINT}?token={apify_token}", data=body, method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            items = json.loads(resp.read().decode("utf-8"))
-        resultados.extend(it for it in items if "error" not in it)
-        errores.extend(it["error"] for it in items if "error" in it)
-        if on_progress:
-            on_progress(min(i + chunk, len(urls)), len(urls))
+    lotes = [urls[i:i + chunk] for i in range(0, len(urls), chunk)]
+    resultados, errores, hechos = [], [], 0
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(lotes) or 1)) as ex:
+        futuros = {ex.submit(_raspar_lote, lote, apify_token): lote for lote in lotes}
+        for fut in as_completed(futuros):
+            lote = futuros[fut]
+            hechos += len(lote)
+            try:
+                items = fut.result()
+                resultados.extend(it for it in items if "error" not in it)
+                errores.extend(it["error"] for it in items if "error" in it)
+            except Exception as e:
+                errores.append(str(e))
+            if on_progress:
+                on_progress(min(hechos, len(urls)), len(urls))
+
     if not resultados and errores:
         raise RuntimeError(errores[0])
     return resultados
