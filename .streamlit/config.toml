@@ -1,0 +1,7 @@
+# Tema visual de Prometeo Talent
+[theme]
+primaryColor = "#F49331"            # naranja (acento / botones)
+backgroundColor = "#FFFFFF"         # fondo blanco
+secondaryBackgroundColor = "#F5F7FA" # gris muy claro (cajas)
+textColor = "#1A1B1F"               # texto casi negro
+font = "sans serif"
