@@ -18,6 +18,8 @@ Como correr (desde la carpeta "Scrapper Candidatos"):
     python evaluar.py
 """
 
+import csv
+import io
 import json
 import re
 import sys
@@ -272,23 +274,16 @@ def escribir_excel(scorecard: sc.Scorecard, resultados: list):
     construir_workbook(scorecard, resultados).save(SALIDA)
 
 
-def construir_workbook_datos(crudos: list):
-    """Excel con los DATOS de cada candidato (sin evaluacion). Branding Prometeo (navy)."""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment
+def _experiencia_str(e: dict) -> str:
+    """Una experiencia: 'Cargo @ Empresa (fechas): descripcion de tareas' (si existe)."""
+    base = f"{e['cargo']} @ {e['empresa'] or '?'} ({e['desde'] or '?'}–{e['hasta'] or 'actual'})"
+    desc = (e.get("descripcion") or "").strip()
+    return f"{base}: {desc}" if desc else base
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Candidatos"
-    encabezados = ["Nombre", "Titular", "Ubicación", "Años exp.", "Cargo actual",
-                   "Empresa actual", "Email", "Teléfono", "LinkedIn",
-                   "Skills", "Educación", "Experiencia"]
-    ws.append(encabezados)
-    for celda in ws[1]:
-        celda.font = Font(bold=True, color="FFFFFF")
-        celda.fill = PatternFill("solid", fgColor="142649")  # azul marino Prometeo
-        celda.alignment = Alignment(vertical="center", wrap_text=True)
 
+def filas_datos(crudos: list) -> list:
+    """Filas (dicts) con TODOS los datos de cada candidato. Base comun para Excel y CSV."""
+    filas = []
     for crudo in crudos:
         p = perfil_limpio(crudo)
         c = datos_contacto(crudo)
@@ -296,26 +291,68 @@ def construir_workbook_datos(crudos: list):
         empresa_actual = next((e.get("empresa") for e in exps if e.get("sigue_ahi") and e.get("empresa")), "")
         if not empresa_actual and exps:
             empresa_actual = exps[0].get("empresa") or ""
-        skills = ", ".join(str(s) for s in p["skills"])
-        educacion = " | ".join(
-            f"{e['institucion']} ({e['titulo']})" if e.get("titulo") else (e.get("institucion") or "")
-            for e in p["educacion"] if e.get("institucion")
-        )
-        experiencia = " | ".join(
-            f"{e['cargo']} @ {e['empresa'] or '?'} ({e['desde'] or '?'}–{e['hasta'] or 'actual'})"
-            for e in exps if e.get("cargo")
-        )
-        ws.append([
-            p["nombre"], p["titular"], p["ubicacion"], p["anios_experiencia_total"],
-            p["cargo_actual"], empresa_actual, c["email"], c["telefono"], c["url"],
-            skills, educacion, experiencia,
-        ])
+        filas.append({
+            "Nombre": p["nombre"],
+            "Titular": p["titular"],
+            "Ubicación": p["ubicacion"],
+            "Años exp.": p["anios_experiencia_total"],
+            "Cargo actual": p["cargo_actual"],
+            "Empresa actual": empresa_actual,
+            "Email": c["email"],
+            "Teléfono": c["telefono"],
+            "LinkedIn": c["url"],
+            "Skills": ", ".join(str(s) for s in p["skills"]),
+            "Educación": " | ".join(
+                f"{e['institucion']} ({e['titulo']})" if e.get("titulo") else (e.get("institucion") or "")
+                for e in p["educacion"] if e.get("institucion")
+            ),
+            "Experiencia": "\n".join(_experiencia_str(e) for e in exps if e.get("cargo")),
+        })
+    return filas
+
+
+def construir_workbook_datos(crudos: list):
+    """Excel con los DATOS de cada candidato (sin evaluacion). Branding Prometeo (navy)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    filas = filas_datos(crudos)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Candidatos"
+    encabezados = list(filas[0].keys()) if filas else ["Nombre"]
+    ws.append(encabezados)
+    for celda in ws[1]:
+        celda.font = Font(bold=True, color="FFFFFF")
+        celda.fill = PatternFill("solid", fgColor="142649")  # azul marino Prometeo
+        celda.alignment = Alignment(vertical="center", wrap_text=True)
+    for f in filas:
+        ws.append(list(f.values()))
+
+    # Ajuste de linea en las columnas largas (Skills, Educación, Experiencia)
+    wrap = Alignment(wrap_text=True, vertical="top")
+    for fila in ws.iter_rows(min_row=2, min_col=10, max_col=12):
+        for celda in fila:
+            celda.alignment = wrap
 
     anchos = {"A": 22, "B": 42, "C": 22, "D": 9, "E": 24, "F": 24,
-              "G": 26, "H": 16, "I": 38, "J": 40, "K": 40, "L": 60}
+              "G": 26, "H": 16, "I": 38, "J": 40, "K": 40, "L": 70}
     for col, w in anchos.items():
         ws.column_dimensions[col].width = w
     return wb
+
+
+def construir_csv_datos(crudos: list) -> bytes:
+    """CSV con TODOS los datos de cada candidato (mismo contenido que el Excel)."""
+    filas = filas_datos(crudos)
+    campos = list(filas[0].keys()) if filas else ["Nombre"]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=campos)
+    w.writeheader()
+    for f in filas:
+        w.writerow(f)
+    # utf-8-sig para que Excel abra bien los acentos
+    return buf.getvalue().encode("utf-8-sig")
 
 
 # ---------------------------------------------------------------------------
