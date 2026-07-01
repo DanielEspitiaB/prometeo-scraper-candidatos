@@ -19,6 +19,7 @@ Como correr (desde la carpeta "Scrapper Candidatos"):
 """
 
 import csv
+import datetime
 import io
 import json
 import re
@@ -51,7 +52,12 @@ def costo_usd(modelo: str, usage: dict) -> float:
     pin, pout = PRECIOS_USD.get(modelo, (3.0, 15.0))
     return (usage.get("input_tokens", 0) * pin + usage.get("output_tokens", 0) * pout) / 1_000_000
 
-# Apify: actor de enriquecimiento de perfiles (mismo que validamos)
+# Enricher ACTIVO: harvestapi (más barato $0.004, sin email, datos más completos)
+ENRICHER_ACTOR = "harvestapi~linkedin-profile-scraper"
+ENRICHER_ENDPOINT = f"https://api.apify.com/v2/acts/{ENRICHER_ACTOR}/run-sync-get-dataset-items"
+ENRICHER_MODE = "Profile details no email ($4 per 1k)"
+
+# dev_fusion queda disponible (para email de finalistas si se necesita)
 APIFY_ACTOR = "dev_fusion~linkedin-profile-scraper"
 APIFY_ENDPOINT = f"https://api.apify.com/v2/acts/{APIFY_ACTOR}/run-sync-get-dataset-items"
 
@@ -80,7 +86,90 @@ def leer_api_key() -> str:
 # ---------------------------------------------------------------------------
 # Perfil limpio: de ~70 campos crudos a solo lo que el modelo necesita
 # ---------------------------------------------------------------------------
+def _ahora_frac() -> float:
+    hoy = datetime.date.today()
+    return hoy.year + (hoy.month - 1) / 12
+
+
 def perfil_limpio(p: dict) -> dict:
+    """Normaliza un perfil crudo (dev_fusion o harvestapi) al mismo formato limpio."""
+    if "experiences" in p:  # dev_fusion usa 'experiences' (plural)
+        return _limpio_devfusion(p)
+    return _limpio_harvest(p)  # harvestapi usa 'experience' (singular)
+
+
+_MESES = {"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+          "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}
+
+
+def _mes_idx(d):
+    """Convierte {month, year} a un índice de meses. None si no hay año."""
+    if not isinstance(d, dict) or not d.get("year"):
+        return None
+    return d["year"] * 12 + (_MESES.get(d.get("month"), 1) - 1)
+
+
+def _anios_harvest(exp: list):
+    """Años de experiencia = UNIÓN de los periodos trabajados (sin contar solapes)."""
+    hoy = datetime.date.today()
+    ahora = hoy.year * 12 + (hoy.month - 1)
+    intervalos = []
+    for e in exp:
+        ini = _mes_idx(e.get("startDate"))
+        if ini is None:
+            continue
+        fin = _mes_idx(e.get("endDate"))
+        if fin is None:  # "Present" o sin fecha de fin
+            fin = ahora
+        intervalos.append((ini, max(fin, ini)))
+    if not intervalos:
+        return None
+    intervalos.sort()
+    total, cs, ce = 0, *intervalos[0]
+    for s, e in intervalos[1:]:
+        if s <= ce:
+            ce = max(ce, e)
+        else:
+            total += ce - cs
+            cs, ce = s, e
+    total += ce - cs
+    return round(total / 12, 1)
+
+
+def _limpio_harvest(p: dict) -> dict:
+    exp = p.get("experience") or []
+    nombre = (str(p.get("firstName") or "") + " " + str(p.get("lastName") or "")).strip() or (p.get("headline") or "")
+    loc = p.get("location") or {}
+    ubic = (loc.get("parsed") or {}).get("text") or loc.get("linkedinText") or ""
+    anios = _anios_harvest(exp)
+    return {
+        "nombre": nombre,
+        "titular": p.get("headline"),
+        "resumen": (p.get("about") or "")[:600],
+        "ubicacion": ubic,
+        "anios_experiencia_total": anios,
+        "cargo_actual": exp[0].get("position") if exp else None,
+        "experiencias": [
+            {
+                "cargo": e.get("position"),
+                "empresa": e.get("companyName"),
+                "industria": e.get("companyIndustry"),
+                "desde": (e.get("startDate") or {}).get("text"),
+                "hasta": (e.get("endDate") or {}).get("text") or "actual",
+                "sigue_ahi": ((e.get("endDate") or {}).get("text") or "").lower() in ("", "present"),
+                "descripcion": (e.get("description") or "")[:400],
+            }
+            for e in exp
+        ],
+        "educacion": [
+            {"institucion": ed.get("schoolName"), "titulo": ed.get("degree") or ed.get("fieldOfStudy")}
+            for ed in (p.get("education") or [])
+        ],
+        "skills": [s.get("name") if isinstance(s, dict) else s for s in (p.get("skills") or [])],
+    }
+
+
+def _limpio_devfusion(p: dict) -> dict:
     return {
         "nombre": p.get("fullName"),
         "titular": p.get("headline"),
@@ -110,21 +199,28 @@ def perfil_limpio(p: dict) -> dict:
 
 def datos_contacto(p: dict) -> dict:
     """Datos que van al Excel para el reclutador (NO al modelo)."""
-    return {
-        "email": p.get("email") or "",
-        "telefono": p.get("mobileNumber") or "",
-        "url": p.get("linkedinUrl") or p.get("linkedinPublicUrl") or "",
-    }
+    if "experiences" in p:  # dev_fusion
+        return {
+            "email": p.get("email") or "",
+            "telefono": p.get("mobileNumber") or "",
+            "url": p.get("linkedinUrl") or p.get("linkedinPublicUrl") or "",
+        }
+    # harvestapi (emails en lista; en modo solo-detalles viene vacío)
+    emails = p.get("emails") or []
+    correo = emails[0] if emails else ""
+    if isinstance(correo, dict):
+        correo = correo.get("email") or correo.get("value") or ""
+    return {"email": correo, "telefono": "", "url": p.get("linkedinUrl") or ""}
 
 
 # ---------------------------------------------------------------------------
 # Raspado de perfiles por URL (Apify) — cuerpo de peticion FIJO
 # ---------------------------------------------------------------------------
 def _raspar_lote(lote: list, apify_token: str) -> list:
-    """Una llamada a Apify con un lote de URLs. Body fijo: {profileUrls: [...]}."""
-    body = json.dumps({"profileUrls": lote}).encode("utf-8")
+    """Una llamada al enricher harvestapi (solo detalles, sin email). Body fijo."""
+    body = json.dumps({"profileScraperMode": ENRICHER_MODE, "urls": lote}).encode("utf-8")
     req = urllib.request.Request(
-        f"{APIFY_ENDPOINT}?token={apify_token}", data=body, method="POST",
+        f"{ENRICHER_ENDPOINT}?token={apify_token}", data=body, method="POST",
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=300) as resp:
