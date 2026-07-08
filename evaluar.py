@@ -227,17 +227,31 @@ def _raspar_lote(lote: list, apify_token: str) -> list:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def scrape_perfiles(urls: list, apify_token: str, chunk: int = 100,
-                    max_workers: int = 8, on_progress=None) -> list:
-    """Enriquece URLs de LinkedIn con dev_fusion, en lotes EN PARALELO (rapido y sin timeouts).
+def _norm_url(u: str) -> str:
+    """Normaliza una URL de perfil para poder compararla (sin https/www/slash final)."""
+    u = (u or "").strip()
+    u = re.sub(r"^https?://", "", u, flags=re.I)
+    u = re.sub(r"^www\.", "", u, flags=re.I)
+    return u.rstrip("/").lower()
 
-    Divide en lotes de 'chunk' y los lanza simultaneamente (hasta 'max_workers' a la vez).
-    on_progress(hechos, total) actualiza el avance a medida que cada lote termina.
-    """
-    urls = list(urls)
+
+def _urls_devueltas(items: list) -> set:
+    """URLs (normalizadas) que sí volvieron, según originalQuery/linkedinUrl del resultado."""
+    vistas = set()
+    for it in items:
+        q = it.get("originalQuery") or {}
+        for u in (q.get("url"), it.get("linkedinUrl")):
+            if u:
+                vistas.add(_norm_url(u))
+    return vistas
+
+
+def _pasada(urls: list, apify_token: str, chunk: int, max_workers: int,
+            on_progress=None, total=None):
+    """Una pasada de scraping en lotes paralelos. Devuelve (resultados, errores)."""
+    total = total or len(urls)
     lotes = [urls[i:i + chunk] for i in range(0, len(urls), chunk)]
     resultados, errores, hechos = [], [], 0
-
     with ThreadPoolExecutor(max_workers=min(max_workers, len(lotes) or 1)) as ex:
         futuros = {ex.submit(_raspar_lote, lote, apify_token): lote for lote in lotes}
         for fut in as_completed(futuros):
@@ -250,11 +264,33 @@ def scrape_perfiles(urls: list, apify_token: str, chunk: int = 100,
             except Exception as e:
                 errores.append(str(e))
             if on_progress:
-                on_progress(min(hechos, len(urls)), len(urls))
+                on_progress(min(hechos, total), total)
+    return resultados, errores
+
+
+def scrape_perfiles(urls: list, apify_token: str, chunk: int = 50,
+                    max_workers: int = 8, on_progress=None):
+    """Enriquece URLs de LinkedIn en lotes paralelos, con reintento de faltantes.
+
+    Lotes de 50 (los de 100 rozaban el limite de 5 min de Apify y se perdian completos).
+    Tras la primera pasada detecta que URLs no volvieron (via originalQuery) y las
+    reintenta una vez en lotes chicos. Devuelve (perfiles, urls_faltantes).
+    """
+    urls = list(urls)
+    resultados, errores = _pasada(urls, apify_token, chunk, max_workers, on_progress)
+
+    devueltas = _urls_devueltas(resultados)
+    faltantes = [u for u in urls if _norm_url(u) not in devueltas]
+    if faltantes:
+        extra, err2 = _pasada(faltantes, apify_token, 10, max_workers)
+        resultados.extend(extra)
+        errores.extend(err2)
+        devueltas = _urls_devueltas(resultados)
+        faltantes = [u for u in urls if _norm_url(u) not in devueltas]
 
     if not resultados and errores:
         raise RuntimeError(errores[0])
-    return resultados
+    return resultados, faltantes
 
 
 # ---------------------------------------------------------------------------

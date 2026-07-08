@@ -130,11 +130,12 @@ if st.button("📥 Extraer datos de candidatos", type="primary", use_container_w
             def _progreso(hechos, total):
                 barra.progress(hechos / total, text=f"Extrayendo... {hechos}/{total} perfiles")
 
-            st.session_state.perfiles = evaluar.scrape_perfiles(
+            perfiles, faltantes = evaluar.scrape_perfiles(
                 urls, st.secrets["APIFY_TOKEN"], on_progress=_progreso
             )
+            st.session_state.perfiles = perfiles
+            st.session_state.faltantes = faltantes
             barra.progress(1.0, text="¡Listo!")
-            st.success(f"Listo: {len(st.session_state.perfiles)} perfil(es) extraído(s) de {len(urls)} URL(s).")
         except Exception as e:
             st.error(f"Hubo un problema al extraer los datos: {e}")
 
@@ -144,6 +145,20 @@ if st.button("📥 Extraer datos de candidatos", type="primary", use_container_w
 perfiles = st.session_state.get("perfiles")
 if perfiles:
     st.divider()
+    faltantes = st.session_state.get("faltantes") or []
+    if faltantes:
+        st.warning(
+            f"⚠️ {len(faltantes)} URL(s) no devolvieron perfil (ya se reintentaron automáticamente). "
+            "Puede ser que el perfil ya no exista o que LinkedIn no respondiera. "
+            "Descarga la lista para revisarlas o volver a intentarlas luego."
+        )
+        st.download_button(
+            f"⬇️ Descargar {len(faltantes)} URLs faltantes",
+            data="\n".join(faltantes),
+            file_name="urls_faltantes.txt",
+            mime="text/plain",
+        )
+    st.success(f"✅ {len(perfiles)} perfil(es) extraído(s).")
     st.subheader("Candidatos extraídos")
 
     tabla = []
