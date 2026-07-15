@@ -113,7 +113,8 @@ st.caption(
     "automáticamente, sin importar en qué columna estén. Cada perfil cuesta ~$0.01 de Apify."
 )
 
-if st.button("📥 Extraer datos de candidatos", type="primary", use_container_width=True):
+if st.button("📥 Extraer datos de candidatos", type="primary", use_container_width=True,
+             disabled=st.session_state.get("extrayendo", False)):
     texto = urls_texto or ""
     if archivo is not None:
         texto += "\n" + archivo.getvalue().decode("utf-8", errors="replace")
@@ -123,7 +124,11 @@ if st.button("📥 Extraer datos de candidatos", type="primary", use_container_w
             "No encontré URLs de LinkedIn. Pega los links arriba, o sube un CSV que tenga "
             "una columna con los links de los perfiles (deben contener `linkedin.com/in/`)."
         )
+    elif st.session_state.get("extrayendo"):
+        st.info("Ya hay una extracción en curso — espera a que termine.")
     else:
+        st.session_state.extrayendo = True
+        st.caption("⏳ Extrayendo... NO cierres esta pestaña hasta que termine.")
         try:
             barra = st.progress(0.0, text=f"Extrayendo {len(urls)} perfiles de LinkedIn...")
 
@@ -138,6 +143,8 @@ if st.button("📥 Extraer datos de candidatos", type="primary", use_container_w
             barra.progress(1.0, text="¡Listo!")
         except Exception as e:
             st.error(f"Hubo un problema al extraer los datos: {e}")
+        finally:
+            st.session_state.extrayendo = False
 
 # ---------------------------------------------------------------------------
 # Resultados + descarga
