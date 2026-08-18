@@ -135,11 +135,12 @@ if st.button("📥 Extraer datos de candidatos", type="primary", use_container_w
             def _progreso(hechos, total):
                 barra.progress(hechos / total, text=f"Extrayendo... {hechos}/{total} perfiles")
 
-            perfiles, faltantes = evaluar.scrape_perfiles(
+            perfiles, faltantes, errores = evaluar.scrape_perfiles(
                 urls, st.secrets["APIFY_TOKEN"], on_progress=_progreso
             )
             st.session_state.perfiles = perfiles
             st.session_state.faltantes = faltantes
+            st.session_state.errores_scrape = errores
             barra.progress(1.0, text="¡Listo!")
         except Exception as e:
             st.error(f"Hubo un problema al extraer los datos: {e}")
@@ -152,6 +153,12 @@ if st.button("📥 Extraer datos de candidatos", type="primary", use_container_w
 perfiles = st.session_state.get("perfiles")
 if perfiles:
     st.divider()
+    errores = st.session_state.get("errores_scrape") or []
+    if errores:
+        st.error(
+            "Errores reportados por el proveedor durante la extracción "
+            "(esto explica URLs faltantes):\n\n- " + "\n- ".join(errores[:3])
+        )
     faltantes = st.session_state.get("faltantes") or []
     if faltantes:
         st.warning(

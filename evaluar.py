@@ -22,8 +22,10 @@ import csv
 import datetime
 import io
 import json
+import random
 import re
 import sys
+import time
 import tomllib
 import urllib.request
 import urllib.error
@@ -216,15 +218,34 @@ def datos_contacto(p: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Raspado de perfiles por URL (Apify) — cuerpo de peticion FIJO
 # ---------------------------------------------------------------------------
-def _raspar_lote(lote: list, apify_token: str) -> list:
-    """Una llamada al enricher harvestapi (solo detalles, sin email). Body fijo."""
+def _raspar_lote(lote: list, apify_token: str, intentos: int = 3) -> list:
+    """Una llamada al enricher harvestapi (solo detalles, sin email). Body fijo.
+
+    Reintenta hasta 'intentos' veces con espera creciente si Apify esta saturado
+    (429/5xx) o hay un fallo de red — antes un lote caido se perdia entero.
+    """
     body = json.dumps({"profileScraperMode": ENRICHER_MODE, "urls": lote}).encode("utf-8")
-    req = urllib.request.Request(
-        f"{ENRICHER_ENDPOINT}?token={apify_token}", data=body, method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    ultimo = "error desconocido"
+    for i in range(intentos):
+        req = urllib.request.Request(
+            f"{ENRICHER_ENDPOINT}?token={apify_token}", data=body, method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            cuerpo = e.read().decode("utf-8", "replace")[:300]
+            ultimo = f"HTTP {e.code}: {cuerpo}"
+            if e.code not in (408, 429, 500, 502, 503, 504):
+                break  # error no recuperable: no insistir
+        except urllib.error.URLError as e:
+            ultimo = f"fallo de red: {e.reason}"
+        except Exception as e:
+            ultimo = f"{type(e).__name__}: {e}"
+        if i < intentos - 1:
+            time.sleep((2 ** i) * 5 + random.uniform(0, 3))
+    raise RuntimeError(ultimo)
 
 
 def _norm_url(u: str) -> str:
@@ -269,12 +290,12 @@ def _pasada(urls: list, apify_token: str, chunk: int, max_workers: int,
 
 
 def scrape_perfiles(urls: list, apify_token: str, chunk: int = 50,
-                    max_workers: int = 8, on_progress=None):
+                    max_workers: int = 6, on_progress=None):
     """Enriquece URLs de LinkedIn en lotes paralelos, con reintento de faltantes.
 
     Lotes de 50 (los de 100 rozaban el limite de 5 min de Apify y se perdian completos).
     Tras la primera pasada detecta que URLs no volvieron (via originalQuery) y las
-    reintenta una vez en lotes chicos. Devuelve (perfiles, urls_faltantes).
+    reintenta una vez en lotes chicos. Devuelve (perfiles, urls_faltantes, errores).
     """
     urls = list(urls)
     resultados, errores = _pasada(urls, apify_token, chunk, max_workers, on_progress)
@@ -290,7 +311,9 @@ def scrape_perfiles(urls: list, apify_token: str, chunk: int = 50,
 
     if not resultados and errores:
         raise RuntimeError(errores[0])
-    return resultados, faltantes
+    # errores unicos (para mostrar al usuario sin repetir)
+    unicos = list(dict.fromkeys(str(e) for e in errores))
+    return resultados, faltantes, unicos
 
 
 # ---------------------------------------------------------------------------
