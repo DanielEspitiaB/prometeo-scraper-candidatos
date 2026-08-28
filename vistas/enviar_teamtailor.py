@@ -14,7 +14,6 @@ import streamlit as st
 
 import teamtailor as tt
 
-st.set_page_config(page_title="Prometeo — Enviar a Teamtailor", page_icon="📤", layout="centered")
 
 LOGO = "https://cdn.prod.website-files.com/641dd5660616e8257e3f6375/641dd5660616e8af003f63da_Prometeo.png"
 
