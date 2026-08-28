@@ -9,10 +9,13 @@ y los candidatos se crean y asocian a esa vacante. Con dedupe por email.
 import csv
 import io
 import unicodedata
+from pathlib import Path
 
 import streamlit as st
 
 import teamtailor as tt
+
+ASTRONAUTA = Path(__file__).resolve().parent.parent / "assets" / "astronauta.png"
 
 
 LOGO = "https://cdn.prod.website-files.com/641dd5660616e8257e3f6375/641dd5660616e8af003f63da_Prometeo.png"
@@ -40,6 +43,19 @@ st.markdown(
 st.image(LOGO, width=210)
 st.markdown('<div class="prometeo-bar"></div>', unsafe_allow_html=True)
 st.title("Enviar candidatos a Teamtailor")
+
+# Estado inicial: ilustración de bienvenida (solo antes de empezar el flujo)
+if not st.session_state.get("tt_vacantes") and not st.session_state.get("tt_resultado"):
+    _c1, _c2, _c3 = st.columns([1, 1.4, 1])
+    with _c2:
+        if ASTRONAUTA.exists():
+            st.image(str(ASTRONAUTA), use_container_width=True)
+        st.markdown(
+            '<p style="text-align:center;color:#758696;font-weight:600;margin-top:-0.4rem;">'
+            'Lanza tus candidatos a su próxima misión 🚀</p>',
+            unsafe_allow_html=True,
+        )
+    st.write("")
 
 # ---------------------------------------------------------------------------
 # API key
@@ -187,18 +203,28 @@ else:
             )
             barra.progress(1.0, text="¡Listo!")
             st.session_state.tt_resultado = resumen
+            st.balloons()
         finally:
             st.session_state.tt_enviando = False
 
 resultado = st.session_state.get("tt_resultado")
 if resultado:
     st.divider()
-    st.write("### Resultado del envío")
-    st.success(f"✅ Creados y asociados: {len(resultado['creados'])}")
+    col_img, col_datos = st.columns([1, 2.2], vertical_alignment="center")
+    with col_img:
+        if ASTRONAUTA.exists():
+            st.image(str(ASTRONAUTA), use_container_width=True)
+    with col_datos:
+        st.write("### 🚀 Misión cumplida")
+        st.caption("Los candidatos ya están en el pipeline de la vacante en Teamtailor.")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("✅ Creados", len(resultado["creados"]))
+        m2.metric("♻️ Ya existían", len(resultado["existentes"]))
+        m3.metric("⚠️ Errores", len(resultado["errores"]))
     if resultado["existentes"]:
-        st.info(f"♻️ Ya existían (solo se asociaron a la vacante): {len(resultado['existentes'])}")
+        st.caption("Los que ya existían no se duplicaron: solo se asociaron a la vacante.")
     if resultado["errores"]:
-        st.error(f"⚠️ Con error: {len(resultado['errores'])}")
+        st.error(f"⚠️ {len(resultado['errores'])} candidato(s) con error.")
         st.download_button(
             "⬇️ Descargar detalle de errores",
             data="\n".join(resultado["errores"]),
