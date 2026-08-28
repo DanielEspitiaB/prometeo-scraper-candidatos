@@ -94,8 +94,14 @@ def buscar_candidato_por_email(api_key: str, email: str):
 
 
 def crear_candidato(api_key: str, atributos: dict) -> str:
-    """Crea un candidato. atributos usa las claves de Teamtailor (first-name, email...)."""
+    """Crea un candidato. atributos usa las claves de Teamtailor (first-name, email...).
+
+    Siempre se marca "sourced" (agregado por el reclutador): igual que al crearlo
+    a mano en la pantalla, y ademas permite crear candidatos SIN email (validado:
+    sin sourced la API exige email; con sourced no).
+    """
     limpios = {k: v for k, v in atributos.items() if v}
+    limpios["sourced"] = True
     body = {"data": {"type": "candidates", "attributes": limpios}}
     data = _pedir("POST", f"{BASE}/candidates", api_key, body)
     return str(data["data"]["id"])
